@@ -1,6 +1,5 @@
 import re
 from typing import List, Dict, Any
-from app.schemas.schemas import ParsedError
 
 # Regex compilations for performance and accuracy
 ERROR_PATTERNS = [

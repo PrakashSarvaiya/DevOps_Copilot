@@ -1,5 +1,5 @@
-from pydantic import BaseModel, EmailStr, Field
-from typing import List, Optional, Any
+from pydantic import BaseModel, EmailStr
+from typing import List, Optional
 from datetime import datetime
 
 # --- Auth Schemas ---
@@ -52,6 +52,7 @@ class JenkinsJobCandidate(BaseModel):
     url: str
     last_status: Optional[str] = None
     monitored: bool = False
+    pipeline_type: Optional[str] = "BUILD"
 
 class JenkinsMonitorSelection(BaseModel):
     jobs: List[JenkinsJobCandidate]
@@ -78,6 +79,7 @@ class JobResponse(BaseModel):
     name: str
     url: Optional[str] = None
     last_status: Optional[str] = None
+    pipeline_type: Optional[str] = "BUILD"
     server_id: int
 
     class Config:
@@ -100,60 +102,52 @@ class BuildDetailsResponse(BuildResponse):
     class Config:
         from_attributes = True
 
-# --- Log Analysis & RCA Schemas ---
-class LogUploadRequest(BaseModel):
-    log_content: str
-    source_name: Optional[str] = "Manual Log Upload"
-    system_type: Optional[str] = "Jenkins" # Jenkins, Windows-VM, Linux-VM, Nginx, Docker
-
+# --- Log Parsing Schema ---
+# Retained because services/parser.py emits this shape; the Agent
+# Controller uses parser.py as a context-understanding tool.
 class ParsedError(BaseModel):
     line_number: int
     content: str
-    severity: str # INFO, WARNING, ERROR, CRITICAL
-    category: str # Docker, Kubernetes, Network, Permission, System
+    severity: str  # INFO, WARNING, ERROR, CRITICAL
+    category: str  # Docker, Kubernetes, Network, Permission, System
 
-class AnalysisResultResponse(BaseModel):
+
+# --- Agent Schemas ---
+class AgentActionResponse(BaseModel):
+    """A single row from the AgentAction audit ledger.
+
+    `build_number` and `job_name` are denormalized for the activity feed so
+    the frontend can group by build without a second round-trip per row.
+    They are optional because the per-build endpoint may skip the join.
+    """
     id: int
-    build_id: Optional[int] = None
-    incident_id: Optional[int] = None
-    root_cause: str
-    possible_issues: List[str]
-    recommendations: List[str]
-    confidence_score: float
-    parsed_errors: List[ParsedError]
-    priority_level: str
+    build_id: int
+    build_number: Optional[int] = None
+    job_name: Optional[str] = None
+    action_type: str  # OBSERVE, UNDERSTAND_CONTEXT, PLAN, CHOOSE, EXECUTE, VERIFY, REPORT
+    status: str
+    tool_name: Optional[str] = None
+    reason: Optional[str] = None
+    developer_email: Optional[str] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
 
-# --- Incident Schemas ---
-class IncidentBase(BaseModel):
-    severity: str
-    system: str
-    status: str
-    root_cause: Optional[str] = None
-    suggested_fix: Optional[str] = None
-    resolution_notes: Optional[str] = None
 
-class IncidentCreate(IncidentBase):
-    incident_uid: str
+class ToolResponse(BaseModel):
+    """Registered tool, for the /agent/tools introspection endpoint."""
+    name: str
+    safety: str  # READ_ONLY | SAFE_ACTION | BLOCKED
+    description: str
 
-class IncidentResponse(IncidentBase):
-    id: int
-    incident_uid: str
-    timestamp: datetime
-    analyses: List[AnalysisResultResponse] = []
 
-    class Config:
-        from_attributes = True
-
-class IncidentExportResponse(BaseModel):
-    incident_uid: str
-    timestamp: str
-    severity: str
-    system: str
-    status: str
-    root_cause: str
-    suggested_fix: str
-    resolution_notes: Optional[str] = None
+class AgentHandleResponse(BaseModel):
+    """Summary returned by manual controller invocations."""
+    build_id: int
+    result: Optional[str] = None
+    stages: List[str] = []
+    plan: Optional[str] = None
+    execute: Optional[dict] = None
+    verify: Optional[str] = None
+    report: Optional[str] = None

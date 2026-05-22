@@ -2,7 +2,6 @@ import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
   Terminal,
-  AlertTriangle,
   LogOut,
   User,
   Cpu,
@@ -19,7 +18,6 @@ export default function Layout() {
   const menuItems = [
     { name: "Dashboard", path: "/dashboard", icon: LayoutDashboard },
     { name: "Jenkins Sync", path: "/jenkins", icon: Terminal },
-    { name: "Incident Center", path: "/incidents", icon: AlertTriangle },
   ];
 
   const handleLogout = () => {

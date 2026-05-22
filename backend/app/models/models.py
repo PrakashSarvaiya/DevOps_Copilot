@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Float, Table, JSON
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.database.db import Base
@@ -35,6 +35,7 @@ class Job(Base):
     name = Column(String(255), nullable=False)
     url = Column(String(255), nullable=True)
     last_status = Column(String(50), nullable=True)  # SUCCESS, FAILURE, ABORTED
+    pipeline_type = Column(String(50), nullable=True, default="BUILD")  # BUILD or RELEASE
     server_id = Column(Integer, ForeignKey("jenkins_servers.id"), nullable=False)
 
     server = relationship("JenkinsServer", back_populates="jobs")
@@ -52,47 +53,27 @@ class Build(Base):
     job_id = Column(Integer, ForeignKey("jobs.id"), nullable=False)
 
     job = relationship("Job", back_populates="builds")
-    analysis = relationship("AnalysisResult", uselist=False, back_populates="build", cascade="all, delete-orphan")
-
-class AnalysisResult(Base):
-    __tablename__ = "analysis_results"
-
-    id = Column(Integer, primary_key=True, index=True)
-    build_id = Column(Integer, ForeignKey("builds.id"), nullable=True)
-    incident_id = Column(Integer, ForeignKey("incidents.id"), nullable=True)
-    root_cause = Column(Text, nullable=False)
-    possible_issues = Column(JSON, nullable=True)  # List of alternate possible issues
-    recommendations = Column(JSON, nullable=False)  # List of dynamic steps/fixes
-    confidence_score = Column(Float, default=0.0)
-    parsed_errors = Column(JSON, nullable=True)    # Extracted raw error lines/severities
-    priority_level = Column(String(50), default="Medium")  # Low, Medium, High, Critical
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    build = relationship("Build", back_populates="analysis")
-    incident = relationship("Incident", back_populates="analyses")
-
-class Incident(Base):
-    __tablename__ = "incidents"
-
-    id = Column(Integer, primary_key=True, index=True)
-    incident_uid = Column(String(100), unique=True, index=True, nullable=False) # e.g. INC-2026-0001
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    severity = Column(String(50), default="High")  # Low, Medium, High, Critical
-    system = Column(String(100), nullable=False)   # Jenkins, Windows-VM, Linux-VM, Docker, K8s
-    status = Column(String(50), default="Open")    # Open, Investigating, Resolved, Closed
-    root_cause = Column(Text, nullable=True)
-    suggested_fix = Column(Text, nullable=True)
-    resolution_notes = Column(Text, nullable=True)
-
-    analyses = relationship("AnalysisResult", back_populates="incident")
 
 class AgentAction(Base):
+    """
+    Audit ledger for the agent loop.
+
+    Every stage the Agent Controller executes (Observe → Understand Context →
+    Plan → Choose → Execute → Verify → Report) writes one row here so the
+    controller's behaviour is fully inspectable. The `tool_name` column records
+    which registered Tool was invoked at the Execute stage (and at any other
+    stage that goes through the ToolRegistry).
+    """
     __tablename__ = "agent_actions"
 
     id = Column(Integer, primary_key=True, index=True)
     build_id = Column(Integer, ForeignKey("builds.id"), nullable=False)
-    action_type = Column(String(50), nullable=False)  # RERUN, NOTIFY, IGNORE
+    # Stage / verb. One of:
+    #   OBSERVE, UNDERSTAND_CONTEXT, PLAN, CHOOSE, EXECUTE, VERIFY, REPORT
+    # Legacy aliases also accepted: RETRY, NOTIFY, IGNORE.
+    action_type = Column(String(50), nullable=False)
     status = Column(String(50), nullable=False, default="Completed")
+    tool_name = Column(String(100), nullable=True)  # e.g. "jenkins.retry_build"
     reason = Column(Text, nullable=True)
     developer_email = Column(String(255), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)

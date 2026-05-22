@@ -1,19 +1,19 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { 
-  Server, 
-  Plus, 
-  Terminal, 
-  RefreshCw, 
+import {
+  Server,
+  Plus,
+  Terminal,
+  RefreshCw,
   Trash2,
   Settings,
-  AlertTriangle, 
+  AlertTriangle,
   CheckCircle,
   HelpCircle,
   Clock,
-  Database
+  Database,
+
 } from 'lucide-react';
 import { api } from '../services/api';
-import RcaView from '../components/RcaView';
 
 interface JenkinsServer {
   id: number;
@@ -26,6 +26,7 @@ interface Job {
   name: string;
   url: string;
   last_status: string;
+  pipeline_type: 'BUILD' | 'RELEASE';
 }
 
 interface JenkinsJobCandidate {
@@ -33,7 +34,10 @@ interface JenkinsJobCandidate {
   url: string;
   last_status: string | null;
   monitored: boolean;
+  pipeline_type: 'BUILD' | 'RELEASE';
 }
+
+type PipelineType = 'BUILD' | 'RELEASE';
 
 interface Build {
   id: number;
@@ -41,21 +45,6 @@ interface Build {
   status: string;
   duration: number;
   timestamp: string;
-}
-
-interface RcaData {
-  id: number;
-  root_cause: string;
-  possible_issues: string[];
-  recommendations: string[];
-  confidence_score: number;
-  parsed_errors: {
-    line_number: number;
-    content: string;
-    severity: string;
-    category: string;
-  }[];
-  priority_level: string;
 }
 
 function getApiErrorMessage(error: unknown, fallback: string) {
@@ -76,6 +65,7 @@ export default function JenkinsJobs() {
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [builds, setBuilds] = useState<Build[]>([]);
   const [availableJobs, setAvailableJobs] = useState<JenkinsJobCandidate[]>([]);
+  const [pipelineTypes, setPipelineTypes] = useState<Record<string, PipelineType>>({});
   const [selectedPipelineUrls, setSelectedPipelineUrls] = useState<Set<string>>(new Set());
   const [showPipelinePicker, setShowPipelinePicker] = useState(false);
   
@@ -85,11 +75,6 @@ export default function JenkinsJobs() {
   const [serverUrl, setServerUrl] = useState('');
   const [username, setUsername] = useState('');
   const [apiToken, setApiToken] = useState('');
-  
-  // RCA Sheet state
-  const [showRca, setShowRca] = useState(false);
-  const [rcaData, setRcaData] = useState<RcaData | null>(null);
-  const [analyzingBuildId, setAnalyzingBuildId] = useState<number | null>(null);
 
   const [loading, setLoading] = useState(false);
   const [pipelineLoading, setPipelineLoading] = useState(false);
@@ -122,6 +107,11 @@ export default function JenkinsJobs() {
       setSelectedPipelineUrls(new Set(
         candidates.filter((job) => job.monitored).map((job) => job.url)
       ));
+      const types: Record<string, PipelineType> = {};
+      candidates.forEach((job) => {
+        types[job.url] = job.pipeline_type || 'BUILD';
+      });
+      setPipelineTypes(types);
     } catch (err: unknown) {
       setPipelineError(getApiErrorMessage(err, 'Failed to fetch Jenkins pipelines.'));
     } finally {
@@ -272,7 +262,12 @@ export default function JenkinsJobs() {
     setPipelineError('');
     setPipelineLoading(true);
     try {
-      const selectedJobs = availableJobs.filter((job) => selectedPipelineUrls.has(job.url));
+      const selectedJobs = availableJobs
+        .filter((job) => selectedPipelineUrls.has(job.url))
+        .map((job) => ({
+          ...job,
+          pipeline_type: pipelineTypes[job.url] || 'BUILD',
+        }));
       const res = await api.put(`/jenkins/servers/${selectedServer.id}/monitored-jobs`, {
         jobs: selectedJobs,
       });
@@ -321,18 +316,11 @@ export default function JenkinsJobs() {
     });
   };
 
-  const handleAnalyzeBuild = async (buildId: number) => {
-    setAnalyzingBuildId(buildId);
-    try {
-      const res = await api.post(`/jenkins/builds/${buildId}/analyze`);
-      setRcaData(res.data);
-      setShowRca(true);
-    } catch (err) {
-      console.error('Failed to run AI RCA on build:', err);
-      alert('AI troubleshooting engine encountered an anomaly.');
-    } finally {
-      setAnalyzingBuildId(null);
-    }
+  const handlePipelineTypeChange = (jobUrl: string, type: PipelineType) => {
+    setPipelineTypes((current) => ({
+      ...current,
+      [jobUrl]: type,
+    }));
   };
 
   const handleRefreshBuilds = async () => {
@@ -477,7 +465,12 @@ export default function JenkinsJobs() {
                         : 'bg-white/[0.01] border-white/5 text-slate-400 hover:bg-white/2 hover:text-slate-300'
                     }`}
                   >
-                    <span className="truncate pr-2">{job.name}</span>
+                    <div className="min-w-0 flex items-center gap-2">
+                      <span className="truncate pr-2">{job.name}</span>
+                      <span className="px-2 py-0.5 rounded-full text-[10px] uppercase tracking-widest font-semibold text-slate-300 bg-slate-900/70 border border-white/10">
+                        {job.pipeline_type}
+                      </span>
+                    </div>
                     <span className={`w-2 h-2 rounded-full shrink-0 ${job.last_status === 'SUCCESS' ? 'bg-emerald-400' : 'bg-rose-500'}`}></span>
                   </button>
                 );
@@ -498,6 +491,9 @@ export default function JenkinsJobs() {
               </h3>
               <p className="text-xs text-slate-400 mt-1">
                 Pipeline: <span className="font-mono text-cyan-400">{selectedJob?.name || 'none'}</span>
+                {selectedJob ? (
+                  <span className="ml-4 text-cyan-300">Type: {selectedJob.pipeline_type}</span>
+                ) : null}
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -531,7 +527,6 @@ export default function JenkinsJobs() {
               </div>
             ) : (
               builds.map((build) => {
-                const isAnalyzing = analyzingBuildId === build.id;
                 return (
                   <div key={build.id} className="p-6 flex items-center justify-between hover:bg-white/[0.005] transition-colors">
                     <div className="flex items-center gap-8">
@@ -552,22 +547,15 @@ export default function JenkinsJobs() {
 
                     <div>
                       {build.status === 'FAILURE' ? (
-                        <button
-                          onClick={() => handleAnalyzeBuild(build.id)}
-                          disabled={isAnalyzing}
-                          className="px-4 py-2 bg-gradient-to-r from-rose-500/10 to-rose-600/20 hover:from-rose-500/20 hover:to-rose-600/30 text-rose-300 border border-rose-500/30 rounded-lg text-xs font-semibold flex items-center gap-2 transition-all glow-btn cursor-pointer disabled:opacity-50"
-                        >
-                          <Terminal className="w-4 h-4 shrink-0" />
-                          <span>{isAnalyzing ? 'Analyzing Failure...' : 'Sync & Analyze'}</span>
-                        </button>
+                        <span className="px-4 py-2 bg-white/2 text-slate-500 border border-white/5 rounded-lg text-xs font-semibold flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4 text-rose-400/70" />
+                          <span>Awaiting agent action</span>
+                        </span>
                       ) : (
-                        <button
-                          disabled
-                          className="px-4 py-2 bg-white/2 text-slate-600 border border-white/5 rounded-lg text-xs font-semibold flex items-center gap-2 cursor-not-allowed"
-                        >
+                        <span className="px-4 py-2 bg-white/2 text-slate-600 border border-white/5 rounded-lg text-xs font-semibold flex items-center gap-2">
                           <CheckCircle className="w-4 h-4" />
                           <span>Healthy</span>
-                        </button>
+                        </span>
                       )}
                     </div>
                   </div>
@@ -700,22 +688,46 @@ export default function JenkinsJobs() {
               ) : (
                 availableJobs.map((job) => {
                   const checked = selectedPipelineUrls.has(job.url);
+                  const type = pipelineTypes[job.url] || 'BUILD';
                   return (
                     <label
                       key={job.url}
-                      className="flex items-center gap-4 p-4 border-b border-white/5 last:border-b-0 hover:bg-white/[0.02] cursor-pointer"
+                      className="flex flex-col gap-3 p-4 border-b border-white/5 last:border-b-0 hover:bg-white/[0.02] cursor-pointer"
                     >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => togglePipeline(job.url)}
-                        className="w-4 h-4 accent-cyan-500"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-semibold text-slate-200 truncate">{job.name}</p>
-                        <p className="text-[10px] text-slate-500 font-mono truncate mt-1">{job.url}</p>
+                      <div className="flex items-center gap-4">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => togglePipeline(job.url)}
+                          className="w-4 h-4 accent-cyan-500"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-slate-200 truncate">{job.name}</p>
+                          <p className="text-[10px] text-slate-500 font-mono truncate mt-1">{job.url}</p>
+                        </div>
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${job.last_status === 'SUCCESS' ? 'bg-emerald-400' : job.last_status === 'FAILURE' ? 'bg-rose-500' : 'bg-cyan-400'}`}></span>
                       </div>
-                      <span className={`w-2 h-2 rounded-full shrink-0 ${job.last_status === 'SUCCESS' ? 'bg-emerald-400' : job.last_status === 'FAILURE' ? 'bg-rose-500' : 'bg-cyan-400'}`}></span>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <label className="text-[10px] text-slate-400 font-semibold uppercase tracking-[0.2em]">
+                          Pipeline type
+                        </label>
+                        <div className="flex gap-2">
+                          {(['BUILD', 'RELEASE'] as PipelineType[]).map((option) => (
+                            <button
+                              key={option}
+                              type="button"
+                              onClick={() => handlePipelineTypeChange(job.url, option)}
+                              className={`px-3 py-1 rounded-full text-[10px] font-semibold uppercase tracking-[0.2em] transition-all ${
+                                type === option
+                                  ? 'bg-cyan-500 text-slate-900'
+                                  : 'bg-white/5 text-slate-400 hover:bg-white/10'
+                              }`}
+                            >
+                              {option}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     </label>
                   );
                 })
@@ -747,13 +759,6 @@ export default function JenkinsJobs() {
           </div>
         </div>
       )}
-
-      {/* AI RCA sheet panel */}
-      <RcaView 
-        data={rcaData} 
-        isOpen={showRca} 
-        onClose={() => setShowRca(false)} 
-      />
     </div>
   );
 }

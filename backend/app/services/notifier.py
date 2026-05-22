@@ -1,4 +1,5 @@
 import logging
+import re
 import smtplib
 from email.message import EmailMessage
 from app.core.config import settings
@@ -19,9 +20,14 @@ def send_failure_email(
         logger.info("SMTP is not configured. Notification skipped for %s.", recipient)
         return False
 
+    recipients = [addr.strip() for addr in re.split(r"[;,]", recipient) if addr.strip()]
+    if not recipients:
+        logger.info("No valid recipient addresses found for failure notification.")
+        return False
+
     message = EmailMessage()
     message["From"] = settings.SMTP_FROM_EMAIL
-    message["To"] = recipient
+    message["To"] = ", ".join(recipients)
     message["Subject"] = subject
     message.set_content(body)
 
