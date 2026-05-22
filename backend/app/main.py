@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.database.db import Base, engine
-from app.api.endpoints import agent, auth, jenkins, analyze, incidents
+from app.api.endpoints import agent, auth, jenkins
 from app.database.db import SessionLocal
 from app.services.agent import run_agent_once
 import logging
@@ -73,8 +73,6 @@ app.add_middleware(
 # Route integrations
 app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["Authentication"])
 app.include_router(jenkins.router, prefix=f"{settings.API_V1_STR}/jenkins", tags=["Jenkins Integration"])
-app.include_router(analyze.router, prefix=f"{settings.API_V1_STR}/analyze", tags=["Ad-hoc Parser Engine"])
-app.include_router(incidents.router, prefix=f"{settings.API_V1_STR}/incidents", tags=["Incident Center"])
 app.include_router(agent.router, prefix=f"{settings.API_V1_STR}/agent", tags=["Autonomous Agent"])
 
 @app.get("/health", tags=["Health Checker"])

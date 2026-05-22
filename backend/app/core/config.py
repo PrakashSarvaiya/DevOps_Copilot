@@ -20,8 +20,6 @@ class Settings(BaseSettings):
     # Gemini AI
     GEMINI_API_KEY: Optional[str] = os.getenv("GEMINI_API_KEY", "")
 
-    # Jenkins mock toggle. Set USE_MOCK_JENKINS=true in .env for offline demo data.
-    USE_MOCK_JENKINS: bool = False
     JENKINS_TIMEOUT_SECONDS: int = 30
 
     # Autonomous agent controls
@@ -38,7 +36,8 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_FROM_EMAIL: str = ""
     SMTP_USE_TLS: bool = True
-    DEFAULT_ALERT_EMAIL: str = ""
+    # DevOps escalation fallback recipients for alerts when developer email is unavailable.
+    DEFAULT_ALERT_EMAIL: str = "prakash.sarvaiya@vijyafintech.com,gaurav.talodhikar@vijyafintech.com"
 
     class Config:
         case_sensitive = True

@@ -5,7 +5,6 @@ import Login from './pages/Login';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import JenkinsJobs from './pages/JenkinsJobs';
-import Incidents from './pages/Incidents';
 
 // Route Guard to enforce JWT authentication
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -45,7 +44,6 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="jenkins" element={<JenkinsJobs />} />
-          <Route path="incidents" element={<Incidents />} />
         </Route>
 
         {/* Fallback Redirection */}
