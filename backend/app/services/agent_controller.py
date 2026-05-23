@@ -22,6 +22,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from datetime import datetime
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -34,6 +36,7 @@ from app.services.agent_knowledge import (
     classify_failure,
     playbook_for,
     rationale_for,
+    release_playbook,
     resolve_args,
 )
 from app.services.agent_tools import (
@@ -42,6 +45,7 @@ from app.services.agent_tools import (
     ToolRegistry,
     default_registry,
 )
+from app.services.email_renderer import render_email, truncate_console
 from app.services.jenkins_client import JenkinsClient
 
 logger = logging.getLogger("DevOps_agent_controller")
@@ -145,10 +149,20 @@ class AgentController:
         outcome["stages"].append("EXECUTE")
         outcome["execute"] = execute_summary
 
-        # 6. VERIFY (terminal stage — no REPORT in this build)
+        # 6. VERIFY
         verify_status = await self._verify(db, build, plan, execute_summary)
         outcome["stages"].append("VERIFY")
         outcome["verify"] = verify_status
+
+        # 7. NOTIFY (conditional — only fires when a human needs to look).
+        # See _should_notify for the policy table. Passes the full context so
+        # the renderer can include parsed errors + log tail in the email body.
+        notify_status = await self._notify(
+            db, build, client, plan, execute_summary, verify_status, context,
+        )
+        if notify_status is not None:
+            outcome["stages"].append("NOTIFY")
+            outcome["notify"] = notify_status
 
         await db.commit()
         outcome["result"] = "handled"
@@ -220,28 +234,28 @@ class AgentController:
         """
         failure_class = classify_failure(context.get("console") or "", context.get("parsed_errors") or [])
         base_rationale = rationale_for(failure_class)
-        playbook = playbook_for(failure_class)
+        is_release = build.job.pipeline_type == "RELEASE"
 
-        # Empty playbook → nothing to do autonomously. Skip the guards.
+        # Playbook selection:
+        #   RELEASE → universal single-retry playbook regardless of failure class.
+        #   BUILD   → class-specific playbook from DEFAULT_PLAYBOOKS.
+        if is_release:
+            playbook = release_playbook()
+            base_rationale = (
+                f"RELEASE pipeline: always retry once before escalating. "
+                f"Underlying class detected: {failure_class.value} ({base_rationale})"
+            )
+        else:
+            playbook = playbook_for(failure_class)
+
+        # Empty playbook → nothing to do autonomously. Skip the action guards;
+        # NOTIFY stage will decide whether to email.
         if not playbook:
             return self._planned(
                 db, build,
                 action="NOTIFY_ONLY",
                 failure_class=failure_class,
                 rationale=f"[{failure_class.value}] {base_rationale}",
-                steps=[],
-            )
-
-        # --- Global guards -------------------------------------------------
-        if build.job.pipeline_type == "RELEASE":
-            return self._planned(
-                db, build,
-                action="NOTIFY_ONLY",
-                failure_class=failure_class,
-                rationale=(
-                    f"[{failure_class.value}] RELEASE pipeline — agent never "
-                    f"auto-acts on releases; notify only."
-                ),
                 steps=[],
             )
 
@@ -549,6 +563,194 @@ class AgentController:
             reason=reason,
         )
         return status
+
+    async def _notify(
+        self,
+        db: AsyncSession,
+        build: Build,
+        client: JenkinsClient,
+        plan: PlanDecision,
+        execute_summary: Dict[str, Any],
+        verify_status: str,
+        context: Dict[str, Any],
+    ) -> Optional[str]:
+        """
+        Decide whether to email humans, then render + send.
+
+        Returns the status string we wrote to the ledger, or None if no email
+        was warranted (the NOTIFY stage doesn't fire and no row is written).
+
+        Policy (matches user direction):
+            - RELEASE pipelines:
+                VERIFY=Verified -> silent
+                otherwise       -> email DEFAULT_ALERT_EMAIL (DevOps fallback)
+            - BUILD pipelines:
+                CODE_ERROR or empty-playbook plan -> email commit authors
+                playbook ran and VERIFY=Verified  -> silent (agent fixed it)
+                playbook ran and VERIFY=Failed    -> email commit authors
+        """
+        if not self._should_notify(build, plan, verify_status):
+            return None
+
+        recipients = await self._resolve_recipients(client, build)
+        if not recipients:
+            await self._record(
+                db, build,
+                action_type="NOTIFY",
+                status="NoRecipient",
+                reason="No commit-author email and no DEFAULT_ALERT_EMAIL configured; nothing to do.",
+            )
+            return "no_recipient"
+        recipient_str = ", ".join(recipients)
+
+        if not settings.SMTP_HOST or not settings.SMTP_FROM_EMAIL:
+            await self._record(
+                db, build,
+                action_type="NOTIFY",
+                status="SmtpUnconfigured",
+                developer_email=recipient_str[:255],
+                reason=(
+                    f"Would have emailed {recipient_str} but SMTP_HOST or "
+                    f"SMTP_FROM_EMAIL is empty."
+                ),
+            )
+            return "smtp_unconfigured"
+
+        scenario = self._pick_scenario(build, plan)
+        ctx = self._build_render_context(
+            build=build,
+            plan=plan,
+            execute_summary=execute_summary,
+            verify_status=verify_status,
+            context=context,
+            recipient_count=len(recipients),
+        )
+        subject, plain_body, html_body = render_email(scenario, ctx)
+
+        result = await self.registry.call(
+            "notify.email",
+            {
+                "recipient": recipient_str,
+                "subject": subject,
+                "body": plain_body,
+                "html_body": html_body,
+            },
+        )
+        sent = bool(result["ok"] and result["output"] and result["output"].get("sent"))
+        await self._record(
+            db, build,
+            action_type="NOTIFY",
+            status="Sent" if sent else "Failed",
+            tool_name="notify.email",
+            developer_email=recipient_str[:255],
+            reason=(
+                f"Emailed {len(recipients)} recipient(s) with template "
+                f"'{scenario}': sent={sent}, error={result.get('error')}."
+            ),
+        )
+        return "sent" if sent else "failed"
+
+    @staticmethod
+    def _should_notify(build: Build, plan: PlanDecision, verify_status: str) -> bool:
+        is_release = build.job.pipeline_type == "RELEASE"
+        if is_release:
+            # On release, only stay silent when the retry actually worked.
+            return verify_status != "Verified"
+        # BUILD pipelines:
+        #   - Plan had no autonomous steps (e.g. CODE_ERROR) -> always email.
+        #   - Plan ran but didn't fix it -> email.
+        #   - Plan ran and Verified -> silent.
+        if plan.action in ("NOTIFY_ONLY", "ESCALATE"):
+            return True
+        if verify_status != "Verified":
+            return True
+        return False
+
+    @staticmethod
+    def _pick_scenario(build: Build, plan: PlanDecision) -> str:
+        """Map (pipeline_type, failure_class) to a template key."""
+        if build.job.pipeline_type == "RELEASE":
+            return "release_escalation"
+        if plan.failure_class == FailureClass.CODE_ERROR:
+            return "code_error"
+        return "recovery_failed"
+
+    async def _resolve_recipients(
+        self,
+        client: JenkinsClient,
+        build: Build,
+    ) -> List[str]:
+        """
+        Resolve recipients as an ordered, de-duplicated list of email addresses.
+
+        - RELEASE failures -> DEFAULT_ALERT_EMAIL only (DevOps fallback).
+        - BUILD failures   -> ALL commit authors from Jenkins changeSets if
+                              available (so a 3-author batch build pings all
+                              3 contributors), else DEFAULT_ALERT_EMAIL.
+        """
+        fallback_raw = settings.DEFAULT_ALERT_EMAIL or ""
+        fallback = [e.strip() for e in fallback_raw.replace(";", ",").split(",") if e.strip()]
+
+        if build.job.pipeline_type == "RELEASE":
+            return fallback
+
+        try:
+            details = await self.registry.call(
+                "jenkins.fetch_build_details",
+                {
+                    "client": client,
+                    "job_name": build.job.name,
+                    "build_number": build.number,
+                    "job_url": build.job.url,
+                },
+            )
+            if details["ok"] and details["output"]:
+                dev_list = details["output"].get("developer_emails") or []
+                # Already deduped + ordered by the client; defensive recheck.
+                cleaned: List[str] = []
+                seen = set()
+                for addr in dev_list:
+                    a = (addr or "").strip()
+                    if a and a not in seen:
+                        cleaned.append(a)
+                        seen.add(a)
+                if cleaned:
+                    return cleaned
+        except Exception as exc:
+            logger.warning("Could not fetch developer emails for %s#%s: %s",
+                           build.job.name, build.number, exc)
+
+        return fallback
+
+    @staticmethod
+    def _build_render_context(
+        *,
+        build: Build,
+        plan: PlanDecision,
+        execute_summary: Dict[str, Any],
+        verify_status: str,
+        context: Dict[str, Any],
+        recipient_count: int,
+    ) -> Dict[str, Any]:
+        """Assemble the dict the Jinja2 templates consume."""
+        steps_taken = [s["tool"] for s in execute_summary.get("steps", [])]
+        return {
+            "pipeline_name": build.job.name,
+            "pipeline_type": build.job.pipeline_type or "BUILD",
+            "build_number": build.number,
+            "build_status": build.status,
+            "build_url": (build.job.url or "").rstrip("/") + f"/{build.number}" if build.job.url else "",
+            "failure_class": plan.failure_class.value,
+            "plan_action": plan.action,
+            "plan_rationale": plan.rationale,
+            "steps_taken": steps_taken,
+            "verify_status": verify_status,
+            "parsed_errors": context.get("parsed_errors") or [],
+            "console_tail": truncate_console(context.get("console") or "", max_lines=30),
+            "recipient_count": recipient_count,
+            "recipient_name": None,  # could resolve to first author's name; left for future
+            "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+        }
 
     # ------------------------------------------------------------------
     # Helpers

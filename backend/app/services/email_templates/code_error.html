@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>{{ pipeline_name }} #{{ build_number }} — code/test failure</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f5f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1f2937;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f5f8;padding:32px 16px;">
+    <tr><td align="center">
+
+      <table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 1px 3px rgba(15,23,42,0.06),0 1px 2px rgba(15,23,42,0.04);">
+
+        <!-- Header -->
+        <tr><td style="background:linear-gradient(135deg,#4f46e5 0%,#06b6d4 100%);padding:28px 32px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="font-size:13px;font-weight:600;color:#e0e7ff;letter-spacing:0.16em;text-transform:uppercase;">DevOps Copilot</td>
+              <td align="right" style="font-size:12px;font-weight:600;color:#fef2f2;background:rgba(244,63,94,0.25);border:1px solid rgba(254,202,202,0.4);border-radius:999px;padding:5px 12px;letter-spacing:0.08em;">CODE&nbsp;ERROR</td>
+            </tr>
+          </table>
+          <div style="font-family:'SF Mono','Menlo','Consolas',monospace;color:#ffffff;font-size:22px;font-weight:700;margin-top:14px;letter-spacing:-0.01em;">{{ pipeline_name }} <span style="color:#c7d2fe;">#{{ build_number }}</span></div>
+          <div style="color:#e0e7ff;font-size:13px;margin-top:4px;">Looks like a code or test failure on your commit. Retrying won't help — needs a look.</div>
+        </td></tr>
+
+        <!-- Body -->
+        <tr><td style="padding:28px 32px 8px 32px;">
+
+          <div style="font-size:15px;line-height:1.55;color:#1f2937;">
+            Hi {{ recipient_name or "there" }},
+          </div>
+
+          <div style="font-size:14px;line-height:1.6;color:#374151;margin-top:12px;">
+            Build <strong style="color:#1f2937;">#{{ build_number }}</strong> of <strong style="color:#1f2937;">{{ pipeline_name }}</strong> failed. Based on the log, this looks like a real code or test problem from a recent commit — I didn't retry because that won't fix it.
+          </div>
+
+          <!-- Detail rows -->
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:22px;border-top:1px solid #e5e7eb;">
+            {% for label, value in [
+              ('Pipeline', pipeline_name + ' (' + pipeline_type + ')'),
+              ('Build', '#' ~ build_number),
+              ('Status', build_status),
+              ('Failure class', failure_class),
+              ('Agent verdict', plan_action),
+            ] %}
+            <tr>
+              <td style="border-bottom:1px solid #e5e7eb;padding:10px 0;font-size:12px;color:#6b7280;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;width:160px;">{{ label }}</td>
+              <td style="border-bottom:1px solid #e5e7eb;padding:10px 0;font-size:14px;color:#1f2937;font-family:'SF Mono','Menlo','Consolas',monospace;">{{ value }}</td>
+            </tr>
+            {% endfor %}
+          </table>
+
+          {% if parsed_errors %}
+          <div style="font-size:12px;color:#6b7280;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;margin:22px 0 8px 0;">Errors the parser flagged</div>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;">
+            {% for err in parsed_errors[:8] %}
+            <tr>
+              <td style="padding:8px 12px;font-family:'SF Mono','Menlo','Consolas',monospace;font-size:12px;color:#7f1d1d;line-height:1.5;word-break:break-word;">
+                <span style="color:#b91c1c;font-weight:600;">L{{ err.line_number }}</span>
+                <span style="color:#991b1b;font-weight:600;margin-left:4px;">[{{ err.severity }}]</span>
+                <span style="color:#7f1d1d;margin-left:6px;">{{ err.content }}</span>
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
+          {% endif %}
+
+          {% if console_tail %}
+          <div style="font-size:12px;color:#6b7280;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;margin:22px 0 8px 0;">Last lines of the build log</div>
+          <div style="background:#0f172a;border-radius:8px;padding:14px 16px;overflow:auto;">
+            <pre style="margin:0;font-family:'SF Mono','Menlo','Consolas',monospace;font-size:12px;color:#e2e8f0;line-height:1.5;white-space:pre-wrap;word-break:break-word;">{% for line in console_tail %}{{ line }}
+{% endfor %}</pre>
+          </div>
+          {% endif %}
+
+          <div style="font-size:13px;color:#4b5563;margin-top:24px;line-height:1.6;">
+            <strong style="color:#1f2937;">Why I made this call:</strong> {{ plan_rationale }}
+          </div>
+
+          {% if build_url %}
+          <div style="margin:28px 0 12px 0;">
+            <a href="{{ build_url }}" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:11px 22px;border-radius:8px;letter-spacing:0.01em;">Open build in Jenkins →</a>
+          </div>
+          {% endif %}
+
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="background:#f9fafb;padding:18px 32px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280;">
+          DevOps Copilot · agent run at {{ timestamp }}{% if recipient_count and recipient_count > 1 %} · also sent to {{ recipient_count - 1 }} other contributor{{ 's' if recipient_count - 1 != 1 else '' }}{% endif %}
+        </td></tr>
+
+      </table>
+
+    </td></tr>
+  </table>
+</body>
+</html>

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.database.db import Base
@@ -14,6 +14,7 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     jenkins_servers = relationship("JenkinsServer", back_populates="owner", cascade="all, delete-orphan")
+    sites = relationship("Site", back_populates="owner", cascade="all, delete-orphan")
 
 class JenkinsServer(Base):
     __tablename__ = "jenkins_servers"
@@ -53,6 +54,46 @@ class Build(Base):
     job_id = Column(Integer, ForeignKey("jobs.id"), nullable=False)
 
     job = relationship("Job", back_populates="builds")
+
+class Site(Base):
+    """
+    A site / endpoint the user wants the monitor to keep an eye on.
+
+    One row per site. The site_monitor service GETs `url` every
+    `check_interval_seconds` and upserts `last_status` / `last_response_ms` /
+    `last_error` in place. `last_status_changed_at` only moves when the
+    status actually flips — used by the UI to show "down for N minutes" and
+    by the monitor itself to decide whether to fire a DOWN alert email
+    (we only email on UP/UNKNOWN -> DOWN transitions, not every tick).
+    """
+    __tablename__ = "sites"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name = Column(String(120), nullable=False)
+    url = Column(String(500), nullable=False)
+    check_interval_seconds = Column(Integer, default=60, nullable=False)
+    timeout_seconds = Column(Integer, default=10, nullable=False)
+    # HTTP responses in [expected_status_min, expected_status_max] count as UP.
+    expected_status_min = Column(Integer, default=200, nullable=False)
+    expected_status_max = Column(Integer, default=399, nullable=False)
+    # Comma-separated extra status codes that should also count as UP for
+    # this specific site (e.g. "401" for an authenticated API that returns
+    # 401 to unauthenticated probes — the server is alive, just rejecting
+    # the request). Empty string means "no extras". Sites:
+    #   - default range covers 200-399
+    #   - additional codes get added on top of that range
+    additional_ok_codes = Column(String(100), default="", nullable=False)
+    enabled = Column(Boolean, default=True, nullable=False)
+    last_checked_at = Column(DateTime, nullable=True)
+    last_status = Column(String(20), default="UNKNOWN", nullable=False)  # UP | DOWN | UNKNOWN
+    last_response_ms = Column(Integer, nullable=True)
+    last_error = Column(Text, nullable=True)
+    last_status_changed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    owner = relationship("User", back_populates="sites")
+
 
 class AgentPoll(Base):
     """

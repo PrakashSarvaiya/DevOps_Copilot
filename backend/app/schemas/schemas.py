@@ -142,6 +142,57 @@ class ToolResponse(BaseModel):
     description: str
 
 
+# --- Site Monitor Schemas ---
+class SiteCreate(BaseModel):
+    name: str
+    url: str
+    check_interval_seconds: Optional[int] = 60
+    timeout_seconds: Optional[int] = 10
+    enabled: Optional[bool] = True
+    # Comma-separated extra HTTP codes that should count as UP for this site
+    # (e.g. "401" for an authenticated API whose health probe expects auth).
+    additional_ok_codes: Optional[str] = ""
+
+
+class SiteUpdate(BaseModel):
+    name: Optional[str] = None
+    url: Optional[str] = None
+    check_interval_seconds: Optional[int] = None
+    timeout_seconds: Optional[int] = None
+    enabled: Optional[bool] = None
+    additional_ok_codes: Optional[str] = None
+
+
+class SiteResponse(BaseModel):
+    id: int
+    user_id: int
+    name: str
+    url: str
+    check_interval_seconds: int
+    timeout_seconds: int
+    enabled: bool
+    additional_ok_codes: str = ""
+    last_checked_at: Optional[datetime] = None
+    last_status: str  # UP | DOWN | UNKNOWN
+    last_response_ms: Optional[int] = None
+    last_error: Optional[str] = None
+    last_status_changed_at: Optional[datetime] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SiteCheckResult(BaseModel):
+    """Returned by the manual /sites/{id}/check endpoint."""
+    site_id: int
+    status: str  # UP | DOWN
+    http_status: Optional[int] = None
+    response_ms: Optional[int] = None
+    error: Optional[str] = None
+    emailed: bool = False
+
+
 class AgentPollResponse(BaseModel):
     """One poll-tick fetch entry, for the dashboard's Agent Fetch Log."""
     id: int

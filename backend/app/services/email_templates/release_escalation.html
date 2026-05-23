@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>RELEASE {{ pipeline_name }} #{{ build_number }} — needs DevOps</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f5f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1f2937;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f5f8;padding:32px 16px;">
+    <tr><td align="center">
+
+      <table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 1px 3px rgba(15,23,42,0.06),0 1px 2px rgba(15,23,42,0.04);">
+
+        <!-- Header (rose tone for release escalation) -->
+        <tr><td style="background:linear-gradient(135deg,#be123c 0%,#9f1239 100%);padding:28px 32px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="font-size:13px;font-weight:600;color:#fecdd3;letter-spacing:0.16em;text-transform:uppercase;">DevOps Copilot</td>
+              <td align="right" style="font-size:12px;font-weight:600;color:#ffffff;background:rgba(255,255,255,0.18);border:1px solid rgba(254,202,202,0.5);border-radius:999px;padding:5px 12px;letter-spacing:0.08em;">RELEASE&nbsp;ESCALATION</td>
+            </tr>
+          </table>
+          <div style="font-family:'SF Mono','Menlo','Consolas',monospace;color:#ffffff;font-size:22px;font-weight:700;margin-top:14px;letter-spacing:-0.01em;">{{ pipeline_name }} <span style="color:#fecdd3;">#{{ build_number }}</span></div>
+          <div style="color:#fecdd3;font-size:13px;margin-top:4px;">Release pipeline failed and one retry didn't recover it. DevOps attention requested.</div>
+        </td></tr>
+
+        <!-- Body -->
+        <tr><td style="padding:28px 32px 8px 32px;">
+
+          <div style="font-size:15px;line-height:1.55;color:#1f2937;">
+            DevOps team,
+          </div>
+
+          <div style="font-size:14px;line-height:1.6;color:#374151;margin-top:12px;">
+            Release build <strong style="color:#1f2937;">#{{ build_number }}</strong> of <strong style="color:#1f2937;">{{ pipeline_name }}</strong> failed.
+            {% if steps_taken %}
+              I retried once ({{ steps_taken | join(', ') }}) — verification still didn't pass.
+            {% else %}
+              I wasn't able to attempt an automatic retry.
+            {% endif %}
+            Per policy, release failures escalate to DevOps when the agent can't recover them.
+          </div>
+
+          <!-- Detail rows -->
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:22px;border-top:1px solid #e5e7eb;">
+            {% for label, value in [
+              ('Pipeline', pipeline_name + ' (RELEASE)'),
+              ('Build', '#' ~ build_number),
+              ('Status', build_status),
+              ('Failure class', failure_class),
+              ('Agent verdict', plan_action),
+              ('Steps taken', (steps_taken | join(', ')) if steps_taken else '(none)'),
+              ('Verification', verify_status),
+            ] %}
+            <tr>
+              <td style="border-bottom:1px solid #e5e7eb;padding:10px 0;font-size:12px;color:#6b7280;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;width:160px;">{{ label }}</td>
+              <td style="border-bottom:1px solid #e5e7eb;padding:10px 0;font-size:14px;color:#1f2937;font-family:'SF Mono','Menlo','Consolas',monospace;">{{ value }}</td>
+            </tr>
+            {% endfor %}
+          </table>
+
+          {% if parsed_errors %}
+          <div style="font-size:12px;color:#6b7280;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;margin:22px 0 8px 0;">Errors the parser flagged</div>
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#fff1f2;border:1px solid #fecdd3;border-radius:8px;">
+            {% for err in parsed_errors[:8] %}
+            <tr>
+              <td style="padding:8px 12px;font-family:'SF Mono','Menlo','Consolas',monospace;font-size:12px;color:#881337;line-height:1.5;word-break:break-word;">
+                <span style="color:#9f1239;font-weight:600;">L{{ err.line_number }}</span>
+                <span style="color:#9f1239;font-weight:600;margin-left:4px;">[{{ err.severity }}]</span>
+                <span style="color:#881337;margin-left:6px;">{{ err.content }}</span>
+              </td>
+            </tr>
+            {% endfor %}
+          </table>
+          {% endif %}
+
+          {% if console_tail %}
+          <div style="font-size:12px;color:#6b7280;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;margin:22px 0 8px 0;">Last lines of the build log</div>
+          <div style="background:#0f172a;border-radius:8px;padding:14px 16px;overflow:auto;">
+            <pre style="margin:0;font-family:'SF Mono','Menlo','Consolas',monospace;font-size:12px;color:#e2e8f0;line-height:1.5;white-space:pre-wrap;word-break:break-word;">{% for line in console_tail %}{{ line }}
+{% endfor %}</pre>
+          </div>
+          {% endif %}
+
+          <div style="font-size:13px;color:#4b5563;margin-top:24px;line-height:1.6;">
+            <strong style="color:#1f2937;">Why I escalated:</strong> {{ plan_rationale }}
+          </div>
+
+          {% if build_url %}
+          <div style="margin:28px 0 12px 0;">
+            <a href="{{ build_url }}" style="display:inline-block;background:#be123c;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;padding:11px 22px;border-radius:8px;letter-spacing:0.01em;">Open release build in Jenkins →</a>
+          </div>
+          {% endif %}
+
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="background:#f9fafb;padding:18px 32px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280;">
+          DevOps Copilot · escalation at {{ timestamp }}
+        </td></tr>
+
+      </table>
+
+    </td></tr>
+  </table>
+</body>
+</html>

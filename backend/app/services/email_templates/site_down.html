@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>{{ site_name }} is DOWN</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f5f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1f2937;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f5f8;padding:32px 16px;">
+    <tr><td align="center">
+
+      <table role="presentation" width="640" cellpadding="0" cellspacing="0" border="0" style="max-width:640px;background:#ffffff;border-radius:14px;overflow:hidden;box-shadow:0 1px 3px rgba(15,23,42,0.06),0 1px 2px rgba(15,23,42,0.04);">
+
+        <!-- Header -->
+        <tr><td style="background:linear-gradient(135deg,#dc2626 0%,#9f1239 100%);padding:28px 32px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+              <td style="font-size:13px;font-weight:600;color:#fecaca;letter-spacing:0.16em;text-transform:uppercase;">DevOps Copilot · Site Monitor</td>
+              <td align="right" style="font-size:12px;font-weight:600;color:#ffffff;background:rgba(255,255,255,0.18);border:1px solid rgba(254,202,202,0.5);border-radius:999px;padding:5px 12px;letter-spacing:0.08em;">SITE&nbsp;DOWN</td>
+            </tr>
+          </table>
+          <div style="font-family:'SF Mono','Menlo','Consolas',monospace;color:#ffffff;font-size:22px;font-weight:700;margin-top:14px;letter-spacing:-0.01em;">{{ site_name }}</div>
+          <div style="color:#fecaca;font-size:13px;margin-top:4px;word-break:break-all;">{{ site_url }}</div>
+        </td></tr>
+
+        <!-- Body -->
+        <tr><td style="padding:28px 32px 8px 32px;">
+
+          <div style="font-size:15px;line-height:1.55;color:#1f2937;">
+            DevOps team,
+          </div>
+
+          <div style="font-size:14px;line-height:1.6;color:#374151;margin-top:12px;">
+            The site monitor just detected that <strong style="color:#1f2937;">{{ site_name }}</strong> is unreachable. This is the first alert — you'll only hear from me again if the status changes.
+          </div>
+
+          <!-- Detail rows -->
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:22px;border-top:1px solid #e5e7eb;">
+            {% for label, value in [
+              ('Site', site_name),
+              ('URL', site_url),
+              ('HTTP status', (http_status | string) if http_status is not none else '(no response)'),
+              ('Response time', (response_ms | string ~ ' ms') if response_ms is not none else 'n/a'),
+              ('Detected at', timestamp),
+            ] %}
+            <tr>
+              <td style="border-bottom:1px solid #e5e7eb;padding:10px 0;font-size:12px;color:#6b7280;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;width:160px;">{{ label }}</td>
+              <td style="border-bottom:1px solid #e5e7eb;padding:10px 0;font-size:14px;color:#1f2937;font-family:'SF Mono','Menlo','Consolas',monospace;word-break:break-all;">{{ value }}</td>
+            </tr>
+            {% endfor %}
+          </table>
+
+          {% if error_message %}
+          <div style="font-size:12px;color:#6b7280;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;margin:22px 0 8px 0;">Error</div>
+          <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px 14px;">
+            <pre style="margin:0;font-family:'SF Mono','Menlo','Consolas',monospace;font-size:12px;color:#7f1d1d;line-height:1.5;white-space:pre-wrap;word-break:break-word;">{{ error_message }}</pre>
+          </div>
+          {% endif %}
+
+          <div style="font-size:13px;color:#4b5563;margin-top:24px;line-height:1.6;">
+            <strong style="color:#1f2937;">What I checked:</strong> a single HTTP GET against the URL with a {{ timeout_seconds }}s timeout. A response in the {{ expected_status_min }}–{{ expected_status_max }} range counts as UP. Anything else (timeouts, connection refused, 4xx, 5xx) counts as DOWN.
+          </div>
+
+          <div style="margin:28px 0 12px 0;">
+            <a href="{{ site_url }}" style="display:inline-block;background:#dc2626;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;padding:11px 22px;border-radius:8px;letter-spacing:0.01em;">Open site →</a>
+          </div>
+
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="background:#f9fafb;padding:18px 32px;border-top:1px solid #e5e7eb;font-size:12px;color:#6b7280;">
+          DevOps Copilot · site-monitor alert at {{ timestamp }}
+        </td></tr>
+
+      </table>
+
+    </td></tr>
+  </table>
+</body>
+</html>
