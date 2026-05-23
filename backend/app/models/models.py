@@ -54,6 +54,34 @@ class Build(Base):
 
     job = relationship("Job", back_populates="builds")
 
+class AgentPoll(Base):
+    """
+    Current-state cache of the agent's most recent fetch per monitored job.
+
+    Exactly one row per Job (enforced by `unique=True` on job_id). The agent
+    upserts this row on every poll tick — overwriting the previous value
+    instead of appending — so the table size stays bounded at N rows for N
+    monitored jobs, regardless of poll frequency.
+
+    `created_at` is bumped on every upsert and is what the dashboard's
+    "polled Ns ago" counter reads. If the fetch itself raised, `status` is
+    null and `error` carries the message.
+    """
+    __tablename__ = "agent_polls"
+
+    id = Column(Integer, primary_key=True, index=True)
+    # Unique so a fresh DB enforces "one row per job" at the schema level.
+    # The application code in services/agent.py also enforces it via
+    # fetch-then-update, so existing DBs without the constraint still behave.
+    job_id = Column(Integer, ForeignKey("jobs.id"), nullable=False, unique=True, index=True)
+    build_number = Column(Integer, nullable=True)
+    status = Column(String(50), nullable=True)          # SUCCESS / FAILURE / ABORTED / RUNNING / null
+    error = Column(Text, nullable=True)                  # populated when the fetch raised
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    job = relationship("Job")
+
+
 class AgentAction(Base):
     """
     Audit ledger for the agent loop.

@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
 from app.core.config import settings
 from app.models.models import AgentAction, Build
@@ -99,8 +100,17 @@ class AgentController:
 
         The Build object must come pre-loaded with `build.job` and
         `build.job.server` (the caller is responsible for the eager-load).
+
+        Idempotent: if a REPORT row already exists for this build the
+        controller returns immediately without writing any new ledger
+        rows. This makes tight polling intervals and webhook re-deliveries
+        safe — every build is processed exactly once.
         """
         outcome: Dict[str, Any] = {"build_id": build.id, "stages": []}
+
+        if await self._already_handled(db, build.id):
+            outcome["result"] = "already_handled"
+            return outcome
 
         # 1. OBSERVE
         await self._record(
@@ -135,15 +145,10 @@ class AgentController:
         outcome["stages"].append("EXECUTE")
         outcome["execute"] = execute_summary
 
-        # 6. VERIFY
+        # 6. VERIFY (terminal stage — no REPORT in this build)
         verify_status = await self._verify(db, build, plan, execute_summary)
         outcome["stages"].append("VERIFY")
         outcome["verify"] = verify_status
-
-        # 7. REPORT
-        report_status = await self._report(db, build, client, plan, execute_summary, context)
-        outcome["stages"].append("REPORT")
-        outcome["report"] = report_status
 
         await db.commit()
         outcome["result"] = "handled"
@@ -545,83 +550,28 @@ class AgentController:
         )
         return status
 
-    async def _report(
-        self,
-        db: AsyncSession,
-        build: Build,
-        client: JenkinsClient,
-        plan: PlanDecision,
-        execute_summary: Dict[str, Any],
-        context: Dict[str, Any],
-    ) -> str:
-        """Email a human-readable summary if SMTP is configured."""
-        recipient = settings.DEFAULT_ALERT_EMAIL
-        try:
-            details_result = await self.registry.call(
-                "jenkins.fetch_build_details",
-                {
-                    "client": client,
-                    "job_name": build.job.name,
-                    "build_number": build.number,
-                    "job_url": build.job.url,
-                },
-            )
-            if details_result["ok"] and details_result["output"]:
-                dev_email = details_result["output"].get("developer_email")
-                if dev_email:
-                    recipient = dev_email
-        except Exception:
-            pass
-
-        steps_taken = ", ".join(s["tool"] for s in execute_summary.get("steps", [])) or "(none)"
-        body = (
-            f"DevOps Copilot - agent report\n"
-            f"\n"
-            f"Pipeline:      {build.job.name}\n"
-            f"Build:         #{build.number}\n"
-            f"Status:        {build.status}\n"
-            f"Failure class: {plan.failure_class.value}\n"
-            f"Plan:          {plan.action}\n"
-            f"Steps taken:   {steps_taken}\n"
-            f"Verified:      {execute_summary.get('ok', False)}\n"
-            f"\n"
-            f"Rationale:\n  {plan.rationale}\n"
-            f"\n"
-            f"Parsed error count: {len(context.get('parsed_errors', []))}\n"
-        )
-
-        if not recipient or not settings.SMTP_HOST:
-            await self._record(
-                db, build,
-                action_type="REPORT",
-                status="LoggedOnly",
-                developer_email=recipient or None,
-                reason=f"SMTP not configured; report not emailed. Body:\n{body}",
-            )
-            return "logged_only"
-
-        report_result = await self.registry.call(
-            "notify.email",
-            {
-                "recipient": recipient,
-                "subject": f"[DevOps Copilot] {build.job.name} #{build.number}: {plan.action}",
-                "body": body,
-            },
-        )
-        sent = bool(report_result["ok"] and report_result["output"].get("sent"))
-        await self._record(
-            db, build,
-            action_type="REPORT",
-            status="Sent" if sent else "Skipped",
-            tool_name="notify.email",
-            developer_email=recipient,
-            reason=f"Report email to {recipient}: sent={sent}, error={report_result.get('error')}.",
-        )
-        return "sent" if sent else "skipped"
-
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _already_handled(db: AsyncSession, build_id: int) -> bool:
+        """
+        True if this build has already been through the full agent loop —
+        detected by the presence of a VERIFY row (the terminal stage now
+        that REPORT has been removed from the loop).
+
+        Cheap single-row lookup; safe to call on every poll tick.
+        """
+        result = await db.execute(
+            select(AgentAction.id)
+            .filter(
+                AgentAction.build_id == build_id,
+                AgentAction.action_type == "VERIFY",
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
 
     @staticmethod
     def _step_succeeded(tool_name: str, output: Any) -> bool:

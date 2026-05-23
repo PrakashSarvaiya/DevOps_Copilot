@@ -124,6 +124,46 @@ class JenkinsClient:
                 raise Exception(f"Failed to fetch builds for job {job_name}: {str(e)}")
         return []
 
+    async def get_latest_build(
+        self, job_name: str, job_url: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch *only* the latest build of a job in a single HTTP call.
+
+        Hits Jenkins's `lastBuild/api/json` shortcut which already includes
+        result + duration + timestamp, so we don't need a second per-build
+        round-trip. Used by the 10-second poll loop where the cheaper path
+        matters.
+
+        Returns a dict with the same shape as items in get_builds() output,
+        or None if Jenkins has no builds for this job yet.
+        """
+        base = job_url.rstrip("/") if job_url else f"{self.url.rstrip('/')}/job/{quote(job_name, safe='')}"
+        target = f"{base}/lastBuild/api/json"
+        async with httpx.AsyncClient(headers=self.headers, verify=False) as client:
+            try:
+                response = await client.get(target, timeout=settings.JENKINS_TIMEOUT_SECONDS)
+            except httpx.ConnectTimeout as e:
+                raise Exception(f"Timed out fetching latest build for {job_name} from Jenkins at {self.url}") from e
+            except Exception as e:
+                raise Exception(f"Failed to fetch latest build for {job_name}: {str(e)}")
+            if response.status_code == 404:
+                # Job exists but has never built — Jenkins returns 404 on lastBuild.
+                return None
+            if response.status_code != 200:
+                raise Exception(
+                    f"Jenkins returned {response.status_code} fetching latest build for {job_name}"
+                )
+            data = response.json()
+            return {
+                "number": data.get("number"),
+                "status": data.get("result") or "RUNNING",
+                "duration": data.get("duration", 0),
+                "timestamp": datetime.fromtimestamp(data.get("timestamp", 0) / 1000.0)
+                if data.get("timestamp")
+                else datetime.utcnow(),
+            }
+
     async def get_build_details(self, job_name: str, build_number: int, job_url: Optional[str] = None) -> Dict[str, Any]:
         async with httpx.AsyncClient(headers=self.headers, verify=False) as client:
             try:

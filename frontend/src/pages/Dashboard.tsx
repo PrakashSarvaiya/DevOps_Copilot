@@ -1,22 +1,25 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertOctagon,
   ChevronDown,
   Cpu,
+  Eraser,
   Eye,
   FileSearch,
   GitBranch,
   Hammer,
   Lightbulb,
   ListChecks,
-  Mail,
   RefreshCcw,
-  Send,
   ShieldCheck,
   Wrench,
 } from 'lucide-react';
 import { api } from '../services/api';
+
+// Match the backend poll interval so the activity feed stays in sync without
+// the user clicking refresh.
+const AUTO_REFRESH_MS = 10_000;
 
 type SafetyClass = 'READ_ONLY' | 'SAFE_ACTION' | 'BLOCKED';
 
@@ -39,6 +42,16 @@ interface Tool {
   description: string;
 }
 
+interface AgentPoll {
+  id: number;
+  job_id: number;
+  job_name: string | null;
+  build_number: number | null;
+  status: string | null;
+  error: string | null;
+  created_at: string;
+}
+
 interface BuildBucket {
   build_id: number;
   build_number: number | null;
@@ -47,7 +60,8 @@ interface BuildBucket {
   latest_created_at: string;
 }
 
-// The canonical seven stages of the agent loop, in order.
+// The six stages of the agent loop, in order. (REPORT was removed — see the
+// activity feed itself if you want the agent's summary.)
 const STAGE_ORDER: string[] = [
   'OBSERVE',
   'UNDERSTAND_CONTEXT',
@@ -55,7 +69,6 @@ const STAGE_ORDER: string[] = [
   'CHOOSE',
   'EXECUTE',
   'VERIFY',
-  'REPORT',
 ];
 
 const STAGE_META: Record<
@@ -68,7 +81,6 @@ const STAGE_META: Record<
   CHOOSE: { label: 'Choose', icon: ListChecks, tone: 'text-violet-300 border-violet-500/25 bg-violet-500/10' },
   EXECUTE: { label: 'Execute', icon: Hammer, tone: 'text-amber-300 border-amber-500/25 bg-amber-500/10' },
   VERIFY: { label: 'Verify', icon: ShieldCheck, tone: 'text-emerald-300 border-emerald-500/25 bg-emerald-500/10' },
-  REPORT: { label: 'Report', icon: Send, tone: 'text-sky-300 border-sky-500/25 bg-sky-500/10' },
 };
 
 const SAFETY_META: Record<SafetyClass, { label: string; tone: string }> = {
@@ -101,22 +113,33 @@ function formatTime(iso: string): string {
 export default function Dashboard() {
   const [actions, setActions] = useState<AgentAction[]>([]);
   const [tools, setTools] = useState<Tool[]>([]);
+  const [polls, setPolls] = useState<AgentPoll[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [showTools, setShowTools] = useState(false);
+  const [showFetchLog, setShowFetchLog] = useState(true);
+  // Wall-clock of the most recent successful refresh, used to render the
+  // "last fetched Ns ago" counter below the live spinner.
+  const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null);
+  const [nowTick, setNowTick] = useState<number>(Date.now());
+  // Stable refresh closure for the auto-interval below.
+  const refreshRef = useRef<((showSpinner?: boolean) => Promise<void>) | undefined>(undefined);
 
   const refresh = async (showSpinner = false) => {
     if (showSpinner) setRefreshing(true);
     setError(null);
     try {
-      const [actionsRes, toolsRes] = await Promise.all([
+      const [actionsRes, toolsRes, pollsRes] = await Promise.all([
         api.get<AgentAction[]>('/agent/actions?limit=200'),
         api.get<Tool[]>('/agent/tools'),
+        api.get<AgentPoll[]>('/agent/polls?limit=200'),
       ]);
       setActions(actionsRes.data);
       setTools(toolsRes.data);
+      setPolls(pollsRes.data);
+      setLastFetchedAt(Date.now());
     } catch (err) {
       console.error('Failed to load agent activity:', err);
       setError('Failed to load agent activity feed.');
@@ -125,10 +148,28 @@ export default function Dashboard() {
       setRefreshing(false);
     }
   };
+  refreshRef.current = refresh;
 
   useEffect(() => {
     void refresh();
+    // Mirror the backend poll cadence so new agent activity appears without
+    // the user clicking refresh.
+    const id = window.setInterval(() => {
+      void refreshRef.current?.(false);
+    }, AUTO_REFRESH_MS);
+    // Once-a-second clock for the "Ns ago" label.
+    const clock = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => {
+      window.clearInterval(id);
+      window.clearInterval(clock);
+    };
   }, []);
+
+  const lastFetchedAgo = useMemo(() => {
+    if (lastFetchedAt == null) return null;
+    const secs = Math.max(0, Math.round((nowTick - lastFetchedAt) / 1000));
+    return secs;
+  }, [lastFetchedAt, nowTick]);
 
   const buildBuckets: BuildBucket[] = useMemo(() => {
     const buckets = new Map<number, BuildBucket>();
@@ -162,15 +203,22 @@ export default function Dashboard() {
 
   const stats = useMemo(() => {
     const retries = actions.filter(
-      (a) => a.action_type === 'EXECUTE' && a.tool_name === 'jenkins.retry_build' && a.status === 'Triggered',
+      (a) =>
+        a.action_type === 'EXECUTE' &&
+        a.tool_name === 'jenkins.retry_build' &&
+        a.status === 'Triggered',
+    ).length;
+    const wipes = actions.filter(
+      (a) =>
+        a.action_type === 'EXECUTE' &&
+        a.tool_name === 'jenkins.clean_workspace' &&
+        a.status === 'Wiped',
     ).length;
     const blocked = actions.filter((a) => a.status === 'Blocked').length;
-    const reports = actions.filter((a) => a.action_type === 'REPORT' && a.status === 'Sent').length;
     return {
-      total: actions.length,
       builds: buildBuckets.length,
       retries,
-      reports,
+      wipes,
       blocked,
     };
   }, [actions, buildBuckets]);
@@ -186,9 +234,8 @@ export default function Dashboard() {
 
   const statCards = [
     { name: 'Builds Handled', value: stats.builds, icon: GitBranch, tone: 'text-indigo-300 bg-indigo-500/10 border-indigo-500/20' },
-    { name: 'Total Stages', value: stats.total, icon: Activity, tone: 'text-cyan-300 bg-cyan-500/10 border-cyan-500/20' },
     { name: 'Retries Triggered', value: stats.retries, icon: RefreshCcw, tone: 'text-amber-300 bg-amber-500/10 border-amber-500/20' },
-    { name: 'Reports Sent', value: stats.reports, icon: Mail, tone: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20' },
+    { name: 'Workspaces Wiped', value: stats.wipes, icon: Eraser, tone: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20' },
     { name: 'Blocked Attempts', value: stats.blocked, icon: AlertOctagon, tone: 'text-rose-300 bg-rose-500/10 border-rose-500/20' },
   ];
 
@@ -202,8 +249,25 @@ export default function Dashboard() {
         <div className="flex-1 min-w-0">
           <h2 className="font-outfit font-extrabold text-xl text-slate-100">DevOps Copilot Agent</h2>
           <p className="text-sm text-slate-400 mt-1">
-            Observe → Understand → Plan → Choose → Execute → Verify → Report. Activity ledger below.
+            Polls every 10s. Acts on FAILUREs through Observe → Understand → Plan → Choose → Execute → Verify.
           </p>
+          {/* Live-poll indicator — circular spinner + last-fetched timer. Makes the */}
+          {/* "alive but nothing to report" state visually unambiguous. */}
+          <div className="mt-3 flex items-center gap-2 text-[11px] font-mono text-cyan-300">
+            <span
+              className="inline-block w-3 h-3 rounded-full border-2 border-cyan-400/30 border-t-cyan-400 animate-spin"
+              title="Polling every 10s"
+            />
+            <span className="text-slate-400">
+              polling every 10s
+              {lastFetchedAgo != null && (
+                <>
+                  {' · '}
+                  <span className="text-cyan-300">last fetched {lastFetchedAgo}s ago</span>
+                </>
+              )}
+            </span>
+          </div>
         </div>
         <button
           onClick={() => refresh(true)}
@@ -216,7 +280,7 @@ export default function Dashboard() {
       </div>
 
       {/* Stats row */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {statCards.map((card) => {
           const Icon = card.icon;
           return (
@@ -386,6 +450,71 @@ export default function Dashboard() {
               );
             })}
           </ul>
+        )}
+      </div>
+
+      {/* Agent Fetch Log — every poll-tick fetch, even when nothing happened.
+          Proves the loop is alive and shows what it saw on each monitored job. */}
+      <div className="glass-card rounded-2xl border border-white/5 overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setShowFetchLog((v) => !v)}
+          className="w-full p-6 border-b border-white/5 flex items-center justify-between cursor-pointer hover:bg-white/[0.01]"
+        >
+          <h3 className="font-outfit font-bold text-slate-200 flex items-center gap-2">
+            <FileSearch className="w-5 h-5 text-cyan-400" />
+            <span>Agent Fetch Log</span>
+            <span className="ml-2 text-[10px] text-slate-400 font-mono">
+              monitoring {polls.length} {polls.length === 1 ? 'job' : 'jobs'}
+            </span>
+          </h3>
+          <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform ${showFetchLog ? 'rotate-180' : ''}`} />
+        </button>
+        {showFetchLog && (
+          polls.length === 0 ? (
+            <div className="p-10 text-center text-slate-500 text-sm">
+              No jobs polled yet. Either the backend hasn't restarted since the agent was enabled,
+              or no jobs are being monitored. Add one under <span className="text-cyan-400 font-mono">Jenkins Sync</span>.
+            </div>
+          ) : (
+            <ul className="divide-y divide-white/5 max-h-96 overflow-y-auto">
+              {polls.map((p) => {
+                const isError = p.error != null;
+                const statusPill = isError
+                  ? 'text-rose-300 bg-rose-500/10 border-rose-500/20'
+                  : p.status === 'FAILURE'
+                  ? 'text-rose-300 bg-rose-500/10 border-rose-500/20'
+                  : p.status === 'SUCCESS'
+                  ? 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20'
+                  : p.status === 'ABORTED'
+                  ? 'text-slate-300 bg-slate-500/10 border-slate-500/20'
+                  : p.status === 'RUNNING'
+                  ? 'text-cyan-300 bg-cyan-500/10 border-cyan-500/20'
+                  : 'text-slate-400 bg-slate-500/5 border-slate-500/10';
+                return (
+                  <li key={p.id} className="px-6 py-2.5 flex items-center gap-3 text-xs">
+                    <span className="font-mono text-cyan-300 truncate flex-1 min-w-0" title={p.job_name ?? ''}>
+                      {p.job_name ?? `job_id=${p.job_id}`}
+                    </span>
+                    <span className="font-mono text-slate-400 w-20 text-right">
+                      {p.build_number != null ? `#${p.build_number}` : '—'}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded border text-[10px] font-semibold uppercase tracking-wider w-24 text-center ${statusPill}`}>
+                      {isError ? 'error' : p.status ?? 'none'}
+                    </span>
+                    <span className="font-mono text-slate-500 w-40 text-right">
+                      {formatTime(p.created_at)}
+                    </span>
+                    {p.error && (
+                      <span className="font-mono text-rose-400 truncate flex-1 min-w-0" title={p.error}>
+                        {p.error}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )
         )}
       </div>
 

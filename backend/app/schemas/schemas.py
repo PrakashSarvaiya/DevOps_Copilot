@@ -142,6 +142,20 @@ class ToolResponse(BaseModel):
     description: str
 
 
+class AgentPollResponse(BaseModel):
+    """One poll-tick fetch entry, for the dashboard's Agent Fetch Log."""
+    id: int
+    job_id: int
+    job_name: Optional[str] = None
+    build_number: Optional[int] = None
+    status: Optional[str] = None  # SUCCESS | FAILURE | ABORTED | RUNNING | None
+    error: Optional[str] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class AgentHandleResponse(BaseModel):
     """Summary returned by manual controller invocations."""
     build_id: int
