@@ -11,7 +11,9 @@ import {
   Hammer,
   Lightbulb,
   ListChecks,
+  Mail,
   RefreshCcw,
+  Send,
   ShieldCheck,
   Wrench,
 } from 'lucide-react';
@@ -60,8 +62,10 @@ interface BuildBucket {
   latest_created_at: string;
 }
 
-// The six stages of the agent loop, in order. (REPORT was removed — see the
-// activity feed itself if you want the agent's summary.)
+// The seven stages of the agent loop. NOTIFY is conditional — it only
+// fires when the agent decides a human needs to look (CODE_ERROR, failed
+// recovery, release escalation). When NOTIFY didn't fire for a build, its
+// icon shows greyed out in the per-build trail.
 const STAGE_ORDER: string[] = [
   'OBSERVE',
   'UNDERSTAND_CONTEXT',
@@ -69,6 +73,7 @@ const STAGE_ORDER: string[] = [
   'CHOOSE',
   'EXECUTE',
   'VERIFY',
+  'NOTIFY',
 ];
 
 const STAGE_META: Record<
@@ -81,6 +86,7 @@ const STAGE_META: Record<
   CHOOSE: { label: 'Choose', icon: ListChecks, tone: 'text-violet-300 border-violet-500/25 bg-violet-500/10' },
   EXECUTE: { label: 'Execute', icon: Hammer, tone: 'text-amber-300 border-amber-500/25 bg-amber-500/10' },
   VERIFY: { label: 'Verify', icon: ShieldCheck, tone: 'text-emerald-300 border-emerald-500/25 bg-emerald-500/10' },
+  NOTIFY: { label: 'Notify', icon: Send, tone: 'text-blue-300 border-blue-500/25 bg-blue-500/10' },
 };
 
 const SAFETY_META: Record<SafetyClass, { label: string; tone: string }> = {
@@ -214,11 +220,15 @@ export default function Dashboard() {
         a.tool_name === 'jenkins.clean_workspace' &&
         a.status === 'Wiped',
     ).length;
+    const emails = actions.filter(
+      (a) => a.action_type === 'NOTIFY' && a.status === 'Sent',
+    ).length;
     const blocked = actions.filter((a) => a.status === 'Blocked').length;
     return {
       builds: buildBuckets.length,
       retries,
       wipes,
+      emails,
       blocked,
     };
   }, [actions, buildBuckets]);
@@ -236,6 +246,7 @@ export default function Dashboard() {
     { name: 'Builds Handled', value: stats.builds, icon: GitBranch, tone: 'text-indigo-300 bg-indigo-500/10 border-indigo-500/20' },
     { name: 'Retries Triggered', value: stats.retries, icon: RefreshCcw, tone: 'text-amber-300 bg-amber-500/10 border-amber-500/20' },
     { name: 'Workspaces Wiped', value: stats.wipes, icon: Eraser, tone: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20' },
+    { name: 'Emails Sent', value: stats.emails, icon: Mail, tone: 'text-blue-300 bg-blue-500/10 border-blue-500/20' },
     { name: 'Blocked Attempts', value: stats.blocked, icon: AlertOctagon, tone: 'text-rose-300 bg-rose-500/10 border-rose-500/20' },
   ];
 
@@ -249,7 +260,7 @@ export default function Dashboard() {
         <div className="flex-1 min-w-0">
           <h2 className="font-outfit font-extrabold text-xl text-slate-100">DevOps Copilot Agent</h2>
           <p className="text-sm text-slate-400 mt-1">
-            Polls every 10s. Acts on FAILUREs through Observe → Understand → Plan → Choose → Execute → Verify.
+            Polls every 10s. On failures: Observe → Understand → Plan → Choose → Execute → Verify → Notify (only when human help is needed).
           </p>
           {/* Live-poll indicator — circular spinner + last-fetched timer. Makes the */}
           {/* "alive but nothing to report" state visually unambiguous. */}
@@ -280,7 +291,7 @@ export default function Dashboard() {
       </div>
 
       {/* Stats row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {statCards.map((card) => {
           const Icon = card.icon;
           return (

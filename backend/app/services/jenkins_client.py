@@ -165,29 +165,42 @@ class JenkinsClient:
             }
 
     async def get_build_details(self, job_name: str, build_number: int, job_url: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Fetch build metadata + the full list of commit authors that went into
+        this build.
+
+        `developer_emails` is a list of all unique authorEmails across every
+        commit in `changeSets[].items`, preserved in commit order. If a build
+        had 3 commits from 3 different developers, all 3 appear here — and the
+        NOTIFY stage emails all of them. The list is empty when Jenkins
+        couldn't resolve authors (manual builds, cron triggers, missing git
+        plugin data).
+        """
         async with httpx.AsyncClient(headers=self.headers, verify=False) as client:
             try:
                 response = await client.get(f"{self._build_base_url(job_name, build_number, job_url)}/api/json", timeout=settings.JENKINS_TIMEOUT_SECONDS)
                 if response.status_code != 200:
                     return {}
                 data = response.json()
-                developer_email = None
-                change_sets = data.get("changeSets") or []
+
+                # Walk every commit and collect unique author emails in order.
+                developer_emails: List[str] = []
+                seen: set[str] = set()
+                change_sets = list(data.get("changeSets") or [])
                 if data.get("changeSet"):
                     change_sets.append(data["changeSet"])
                 for change_set in change_sets:
                     for item in change_set.get("items", []):
-                        author_email = item.get("authorEmail")
-                        if author_email:
-                            developer_email = author_email
-                            break
-                    if developer_email:
-                        break
+                        author_email = (item.get("authorEmail") or "").strip()
+                        if author_email and author_email not in seen:
+                            developer_emails.append(author_email)
+                            seen.add(author_email)
+
                 return {
                     "number": data.get("number", build_number),
                     "result": data.get("result"),
                     "building": data.get("building", False),
-                    "developer_email": developer_email,
+                    "developer_emails": developer_emails,
                     "url": data.get("url"),
                 }
             except httpx.ConnectTimeout as e:

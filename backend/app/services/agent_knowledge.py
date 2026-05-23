@@ -179,6 +179,29 @@ def playbook_for(failure_class: FailureClass) -> List[PlanStep]:
     return list(DEFAULT_PLAYBOOKS.get(failure_class, []))
 
 
+# ---------------------------------------------------------------------------
+# RELEASE-pipeline policy
+#
+# Release builds get one universal playbook regardless of failure class — the
+# operator's choice is "always try retry first; if that doesn't recover, ping
+# DevOps." (Per user direction.) The retry is still gated by the controller's
+# memory + per-build-cap guards so a chronically broken release isn't retried
+# forever.
+# ---------------------------------------------------------------------------
+RELEASE_RETRY_PLAYBOOK: List[PlanStep] = [
+    PlanStep(
+        tool_name="jenkins.retry_build",
+        args={"client": "$client", "job_name": "$job_name", "job_url": "$job_url"},
+        label="Retry release pipeline",
+    ),
+]
+
+
+def release_playbook() -> List[PlanStep]:
+    """Copy of the canonical RELEASE-pipeline playbook (single retry step)."""
+    return list(RELEASE_RETRY_PLAYBOOK)
+
+
 # Reason text used by the planner — kept here so it's easy to audit what a
 # junior would "say" for each class.
 CLASS_RATIONALE: Dict[FailureClass, str] = {

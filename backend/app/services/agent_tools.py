@@ -200,8 +200,14 @@ async def _notify_email(
     recipient: str,
     subject: str,
     body: str,
+    html_body: Optional[str] = None,
 ) -> Dict[str, Any]:
-    sent = send_failure_email(recipient=recipient, subject=subject, body=body)
+    sent = send_failure_email(
+        recipient=recipient,
+        subject=subject,
+        body=body,
+        html_body=html_body,
+    )
     return {"sent": sent, "recipient": recipient}
 
 
@@ -258,9 +264,9 @@ def build_default_registry() -> ToolRegistry:
     reg.register(Tool(
         name="notify.email",
         safety=SafetyClass.SAFE_ACTION,
-        description="Send a failure-notification email through the configured SMTP server.",
+        description="Send a failure-notification email through the configured SMTP server. Optional html_body for multipart/alternative.",
         handler=_notify_email,
-        parameters={"recipient": "str", "subject": "str", "body": "str"},
+        parameters={"recipient": "str", "subject": "str", "body": "str", "html_body": "Optional[str]"},
     ))
 
     # --- BLOCKED placeholders ---

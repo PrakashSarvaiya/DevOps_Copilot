@@ -55,12 +55,15 @@ backend/
     services/
       jenkins_client.py           Thin async Jenkins HTTP client (httpx)
       parser.py                   Regex log-error classifier (used by the agent as a context tool)
-      notifier.py                 SMTP (registered as a tool, not currently invoked by the loop)
+      notifier.py                 SMTP send_failure_email (supports multipart HTML)
+      email_renderer.py           Jinja2 templates → (subject, plain, html) for the NOTIFY stage
+      email_templates/            HTML templates (code_error, recovery_failed, release_escalation, site_down)
       agent.py                    Polling + dispatch — the entry surface
-      agent_controller.py         Seven-stage state machine (6 stages effective: REPORT removed)
+      agent_controller.py         Seven-stage state machine (OBSERVE…VERIFY + optional NOTIFY)
       agent_tools.py              ToolRegistry, SafetyClass enum, safe/blocked allowlist
       agent_knowledge.py          FailureClass enum + classifier + per-class playbooks
       agent_memory.py             Queries over the AgentAction ledger
+      site_monitor.py             Independent UP/DOWN poll loop for user-registered URLs
   requirements.txt
   .env                            Local secrets — gitignored. AGENT_WEBHOOK_SECRET lives here.
   DevOps_copilot.db               Local SQLite — gitignored.
@@ -79,19 +82,23 @@ frontend/
 
 ## How the agent works
 
-### Six-stage loop (per failed build)
+### Seven-stage loop (per failed build)
 
 ```
-OBSERVE   → record we saw the failure
+OBSERVE            → record we saw the failure
 UNDERSTAND_CONTEXT → fetch console log + run parser to extract error lines
-PLAN      → classify failure, look up memory, pick action sequence
-CHOOSE    → validate every step against the tool registry
-EXECUTE   → walk the step list; halt on first failure
-VERIFY    → confirm the last step did what it said
+PLAN               → classify failure, look up memory, pick action sequence
+CHOOSE             → validate every step against the tool registry
+EXECUTE            → walk the step list; halt on first failure
+VERIFY             → confirm the last step did what it said
+NOTIFY (optional)  → email a human when the agent couldn't auto-recover
 ```
 
-REPORT was removed deliberately by user direction (no emails). Each stage
-writes exactly one row to `agent_actions`.
+NOTIFY only fires when human help is actually needed (see "Email policy"
+below). When the agent successfully retries or wipes+retries, NOTIFY is
+skipped and no row is written. The idempotency check `_already_handled`
+uses VERIFY as the terminal marker — VERIFY always fires; NOTIFY is the
+optional 7th stage.
 
 ### Tool Registry ([agent_tools.py](backend/app/services/agent_tools.py))
 
@@ -125,6 +132,31 @@ returns a `FailureClass`:
 | `UNKNOWN` | nothing matched | `[]` |
 
 Empty playbook ⇒ plan demotes to `NOTIFY_ONLY` / `ESCALATE` and no tools fire.
+
+### RELEASE pipeline override
+
+`pipeline_type=='RELEASE'` jobs do NOT use the class-specific playbook. They
+always use `RELEASE_RETRY_PLAYBOOK` (a single `jenkins.retry_build` step)
+regardless of failure class. If the retry fails, NOTIFY fires to
+`DEFAULT_ALERT_EMAIL`. Rationale: release pipelines are sensitive; the
+operator's preference is "always try one retry first, then escalate to
+DevOps if it still fails." Per-build retry caps and memory-based
+escalation guards still apply.
+
+### Email policy (NOTIFY stage)
+
+| Pipeline | Outcome | Recipient |
+|---|---|---|
+| BUILD + `CODE_ERROR` (compile / test failure) | always notify | commit author, fallback `DEFAULT_ALERT_EMAIL` |
+| BUILD + infra-class playbook ran + VERIFY=Verified | **silent** | — |
+| BUILD + infra-class playbook ran + VERIFY=Failed | always notify | commit author, fallback `DEFAULT_ALERT_EMAIL` |
+| RELEASE + retry succeeded (VERIFY=Verified) | **silent** | — |
+| RELEASE + retry failed / didn't run | always notify | `DEFAULT_ALERT_EMAIL` only (DevOps) |
+
+The commit author email is resolved via `jenkins.fetch_build_details`
+which reads it from Jenkins's `changeSets`. The policy lives in
+`AgentController._should_notify` + `_resolve_recipient`. Update those
+two methods (plus `_compose_email`) if you tune the rules.
 
 ### Memory layer ([agent_memory.py](backend/app/services/agent_memory.py))
 
@@ -162,6 +194,7 @@ Lifespan loop in [main.py](backend/app/main.py) wakes every
 | `builds` | Synced from Jenkins; one row per build number | `job: Job` |
 | `agent_actions` | Audit ledger — one row per agent loop stage | `build: Build` |
 | `agent_polls` | Current-state cache, **one row per job** (upsert) | `job: Job` |
+| `sites` | User-registered URLs for the site monitor. **One row per site** (upserted on each check) | `owner: User` |
 
 `agent_actions.tool_name` and `agent_polls.job_id` (with `unique=True`) were
 added after the original schema. SQLAlchemy's `create_all` adds missing
@@ -191,6 +224,13 @@ All under `/api/v1`. JWT required unless noted.
 - `GET /agent/actions/build/{id}` — per-build stage trail
 - `GET /agent/polls?limit=N` — current poll status per job (one row per job)
 
+### sites (site monitor)
+- `GET /sites/` — list current user's sites
+- `POST /sites/` — register a new site (`name`, `url`, optional interval/timeout/enabled)
+- `PUT /sites/{id}` — update fields
+- `DELETE /sites/{id}` — stop monitoring
+- `POST /sites/{id}/check` — force an immediate check (ignores interval, useful for verifying alerts)
+
 ## Environment variables (`backend/.env`)
 
 ```ini
@@ -199,7 +239,21 @@ AGENT_ENABLED=true                  # background poll loop in main.py
 AGENT_POLL_INTERVAL_SECONDS=10
 AGENT_AUTO_RERUN_ENABLED=false      # set true to let planner pick RETRY / RETRY_AFTER_CLEAN
 AGENT_MAX_RERUNS_PER_BUILD=1
-# Optional: SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_EMAIL, SMTP_USE_TLS
+
+# Site monitor
+SITE_MONITOR_ENABLED=false          # second background loop, checks registered URLs
+SITE_MONITOR_POLL_INTERVAL_SECONDS=30   # how often the loop wakes; each site has its own check_interval_seconds
+
+# Required for the NOTIFY stage to actually send mail. With SMTP_HOST empty
+# the agent still classifies, decides, and writes a NOTIFY row with
+# status=SmtpUnconfigured — useful for dev without leaking emails.
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USE_TLS=true
+SMTP_USERNAME=<gmail address>
+SMTP_PASSWORD=<gmail app password>  # generate at Account → Security → 2-Step → App passwords
+SMTP_FROM_EMAIL=<gmail address>
+
 # Optional: JWT_SECRET, DATABASE_URL, ENVIRONMENT
 ```
 

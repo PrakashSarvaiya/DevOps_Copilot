@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     AGENT_MAX_RERUNS_PER_BUILD: int = 1
     AGENT_WEBHOOK_SECRET: str = ""
 
+    # Site monitor controls
+    SITE_MONITOR_ENABLED: bool = False
+    # How often the monitor loop wakes up. Individual sites have their own
+    # check_interval_seconds; this just bounds how granular scheduling can be.
+    SITE_MONITOR_POLL_INTERVAL_SECONDS: int = 30
+
     # Email notification controls
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587
