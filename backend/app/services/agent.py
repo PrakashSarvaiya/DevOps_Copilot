@@ -1,5 +1,5 @@
 """
-Agent service — observation + dispatch layer.
+Agent service - observation + dispatch layer.
 
 This module is the *entry* surface the rest of the app talks to:
 
@@ -19,18 +19,51 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
-from app.models.models import Build, JenkinsServer, Job
+from app.models.models import AgentPoll, Build, JenkinsServer, Job
 from app.schemas.schemas import JenkinsWebhookPayload
 from app.services.agent_controller import AgentController
 from app.services.jenkins_client import JenkinsClient
 
 logger = logging.getLogger("DevOps_agent")
+
+
+async def _upsert_poll(
+    db: AsyncSession,
+    *,
+    job_id: int,
+    build_number: Optional[int],
+    status: Optional[str],
+    error: Optional[str],
+) -> None:
+    """
+    Upsert the single AgentPoll row for this job. There's at most one row
+    per job — fresh DBs enforce it via `unique=True` on the column, and we
+    enforce it in code here so existing DBs without the constraint also
+    stay deduped. The row's `created_at` is refreshed on every call so the
+    dashboard's "polled Ns ago" counter advances correctly.
+    """
+    existing = await db.execute(
+        select(AgentPoll).filter(AgentPoll.job_id == job_id)
+    )
+    row = existing.scalars().first()
+    if row is None:
+        db.add(AgentPoll(
+            job_id=job_id,
+            build_number=build_number,
+            status=status,
+            error=error,
+        ))
+        return
+    row.build_number = build_number
+    row.status = status
+    row.error = error
+    row.created_at = datetime.utcnow()
 
 
 async def _save_build(db: AsyncSession, job: Job, build_data: Dict[str, Any]) -> Build:
@@ -77,8 +110,13 @@ def _client_for(server: JenkinsServer) -> JenkinsClient:
 
 async def run_agent_once(db: AsyncSession) -> List[Dict[str, Any]]:
     """
-    Poll all monitored jobs, sync builds, and dispatch the controller for
-    failures. Returns a list of per-build outcome summaries.
+    Poll loop iteration: for each monitored Job, fetch ONLY the latest build
+    via Jenkins's `lastBuild/api/json` (one HTTP call per job, not 1+N), and
+    dispatch the agent loop only if that build is a FAILURE.
+
+    Non-failure latest builds (SUCCESS / ABORTED / RUNNING / no build yet)
+    write no ledger entries. The activity feed only fills up when the agent
+    actually has work to do.
     """
     controller = AgentController()
     result = await db.execute(
@@ -90,19 +128,48 @@ async def run_agent_once(db: AsyncSession) -> List[Dict[str, Any]]:
     for job in jobs:
         client = _client_for(job.server)
         try:
-            builds = await client.get_builds(job.name, job.url)
-            for build_data in builds:
-                job.last_status = build_data["status"]
-                build = await _save_build(db, job, build_data)
-                await db.flush()
-                if build.status == "FAILURE":
-                    loaded = await _load_build_with_relations(db, build.id)
-                    if loaded:
-                        outcome = await controller.handle_build_event(db, loaded, client)
-                        outcomes.append(outcome)
+            latest = await client.get_latest_build(job.name, job.url)
+
+            # Upsert the single poll-status row for this job. One row per
+            # job, ever — overwritten each tick. Backs the dashboard's
+            # "Agent Fetch Log" / "polled Ns ago" indicators.
+            await _upsert_poll(
+                db,
+                job_id=job.id,
+                build_number=latest.get("number") if latest else None,
+                status=latest.get("status") if latest else None,
+                error=None,
+            )
+
+            if latest is None or latest.get("number") is None:
+                await db.commit()
+                continue  # job exists but has no builds yet — nothing to do
+
+            job.last_status = latest["status"]
+            build = await _save_build(db, job, latest)
+            await db.flush()
+
+            if build.status == "FAILURE":
+                loaded = await _load_build_with_relations(db, build.id)
+                if loaded:
+                    outcome = await controller.handle_build_event(db, loaded, client)
+                    outcomes.append(outcome)
+
             await db.commit()
         except Exception as exc:
             logger.warning("Agent skipped job %s: %s", job.name, exc)
+            # Best-effort: surface the failure in the poll status board.
+            try:
+                await _upsert_poll(
+                    db,
+                    job_id=job.id,
+                    build_number=None,
+                    status=None,
+                    error=str(exc)[:1000],
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
             outcomes.append({
                 "job_id": job.id,
                 "job_name": job.name,

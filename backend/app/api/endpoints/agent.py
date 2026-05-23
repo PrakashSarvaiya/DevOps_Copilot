@@ -8,10 +8,11 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import get_current_user, require_devops
 from app.core.config import settings
 from app.database.db import get_db
-from app.models.models import AgentAction, Build, Job, User
+from app.models.models import AgentAction, AgentPoll, Build, Job, User
 from app.schemas.schemas import (
     AgentActionResponse,
     AgentHandleResponse,
+    AgentPollResponse,
     JenkinsWebhookPayload,
     ToolResponse,
     WebhookAck,
@@ -122,6 +123,39 @@ async def list_actions_for_build(
         .order_by(AgentAction.created_at.asc())
     )
     return [_action_to_response(a) for a in result.scalars().all()]
+
+
+@router.get("/polls", response_model=List[AgentPollResponse])
+async def list_polls(
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Most recent N poll-tick fetches across all monitored jobs.
+
+    One row per (job, poll tick) — populates the dashboard's "Agent Fetch
+    Log". Job name is denormalized so the UI doesn't need a separate lookup.
+    """
+    result = await db.execute(
+        select(AgentPoll)
+        .options(selectinload(AgentPoll.job))
+        .order_by(AgentPoll.created_at.desc())
+        .limit(limit)
+    )
+    rows = list(result.scalars().all())
+    return [
+        AgentPollResponse(
+            id=p.id,
+            job_id=p.job_id,
+            job_name=p.job.name if p.job else None,
+            build_number=p.build_number,
+            status=p.status,
+            error=p.error,
+            created_at=p.created_at,
+        )
+        for p in rows
+    ]
 
 
 @router.post("/build/{build_id}/handle", response_model=AgentHandleResponse)
